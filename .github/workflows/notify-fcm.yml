@@ -1,0 +1,36 @@
+name: notify-fcm
+# Sends an FCM "refresh" wake-up to topic "all" whenever control.json changes.
+# The push carries NO content; phones re-download the signed control.json and verify it.
+on:
+  push:
+    branches: [main]
+    paths: [control.json]
+  workflow_dispatch:
+concurrency: { group: fcm, cancel-in-progress: false }
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: { contents: read }
+    steps:
+      - name: Send FCM topic message
+        env:
+          FIREBASE_SA: ${{ secrets.FIREBASE_SA }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [ -z "$FIREBASE_SA" ]; then echo "FIREBASE_SA secret not set; skipping"; exit 0; fi
+          pip install --quiet google-auth requests
+          python3 - <<'PY'
+          import json, os, requests
+          from google.oauth2 import service_account
+          from google.auth.transport.requests import Request
+          info = json.loads(os.environ["FIREBASE_SA"])
+          cred = service_account.Credentials.from_service_account_info(info, scopes=["https://www.googleapis.com/auth/firebase.messaging"])
+          cred.refresh(Request())
+          msg = {"message": {"topic": "all",
+                 "data": {"type": "refresh", "rev": os.environ["SHA"][:12]},
+                 "android": {"priority": "HIGH", "ttl": "3600s", "collapse_key": "control"}}}
+          r = requests.post(f"https://fcm.googleapis.com/v1/projects/{info['project_id']}/messages:send",
+                            headers={"Authorization": f"Bearer {cred.token}"}, json=msg, timeout=20)
+          print(r.status_code, r.text[:300]); r.raise_for_status()
+          PY
